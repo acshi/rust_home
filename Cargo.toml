@@ -1,0 +1,12 @@
+[package]
+name = "rust_home"
+version = "0.1.0"
+authors = ["Acshi Haggenmiller <acshikh@gmail.com>"]
+
+[dependencies]
+http = "0.1"
+chrono = "0.4"
+rand = "0.3"
+thread-pool = "0.1"
+lazy_static = "0.2"
+regex = "0.2"
