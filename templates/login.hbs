@@ -1,0 +1,20 @@
+<html>
+<head>
+<link rel='stylesheet' type='text/css' href='resources/styles.css'>
+</head>
+<body>
+<h1>Rust Home</h1>
+{{#if login_failed}}
+<div class="message">Username or password incorrect, please try again</div>
+{{/if}}
+<div class="login_container">
+    <form action="/login" method="post">
+        <input class="textInput" type="text" placeholder="Username" name="username" required />
+        <input class="textInput" type="password" placeholder="Password" name="password" required />
+
+        <label><input type="checkbox" name="remember_me" checked="checked"> Remember me</label>
+        <button type="submit">Login</button>
+    </form>
+</div>
+</body>
+</html>

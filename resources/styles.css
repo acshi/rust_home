@@ -1,0 +1,49 @@
+body {
+    font-size: 2vmin;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+}
+* {
+    font-size: inherit;
+}
+h1 {
+    font-size: 6vmin;
+    text-align: center;
+}
+div.message {
+    text-align: center;
+    margin-bottom: 1em;
+}
+
+input, button {
+    padding: 0.5em 0.5em;
+    margin: 0.5em;
+}
+button, .textInput {
+    width: calc(100% - 1em - 2px);
+}
+.login_container {
+    width: 30vmin;
+    margin: auto;
+}
+
+.devices_container {
+    width: 80vmin;
+    margin: auto;
+    text-align: center;
+}
+table {
+    width: 100%;
+}
+th {
+    text-align: left;
+}
+tr:nth-child(odd) {
+    background-color: #f8f8f8;
+}
+tr:nth-child(even) {
+    background-color: #eaeaea;
+}
+td label {
+    width: 100%;
+    display: block;
+}

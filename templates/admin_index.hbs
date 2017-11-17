@@ -1,0 +1,31 @@
+<html>
+<head>
+<link rel='stylesheet' type='text/css' href='resources/styles.css'>
+<script async='' src='resources/scripts.js'></script>
+<script>
+document.csrf = '{{csrf}}';
+</script>
+</head>
+<body>
+<h1>Rust Home</h1>
+<div class='devices_container'>
+    Welcome back {{username}}! <a href='/logout'>Logout</a>
+    <br>
+    <br>
+    <table>
+    <tr>
+        <th>Device</th>
+        <th>Id</th>
+        <th>Value</th>
+    </tr>
+    {{#each bool_ir_devices}}
+        <tr>
+            <td>{{this.name}}</td>
+            <td>{{this.id}}</td>
+            <td><label><input id='{{this.id}}' class='boolean_device' type='checkbox' {{#if this.value}}checked{{/if}}></input></label></td>
+        </tr>
+    {{/each}}
+    </table>
+</div>
+</body>
+</html>
