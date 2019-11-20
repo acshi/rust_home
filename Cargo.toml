@@ -8,20 +8,21 @@ debug = true
 opt-level = 3
 
 [dependencies]
-rocket = "0.3"
-rocket_codegen = "0.3"
-rand = "0.3"
-serde =  "1.0"
+rocket = "0.4.2"
+rocket_codegen = "0.4.2"
+rand = "0.7"
+serde = { version = "1.0", features = ["std", "rc"] }
 serde_derive = "1.0"
 serde_json = "1.0"
-urlencoded = "0.5"
+urlencoded = "0.6"
 config = "0.7"
-ring-pwhash = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 time = "0.1"
 maplit = "0.1"
+serial = "0.4"
+scrypt = { version = "0.2", default-features = false }
 
 [dependencies.rocket_contrib]
-version = "0.3"
+version = "0.4"
 default-features = false
 features = ["handlebars_templates", "json"]

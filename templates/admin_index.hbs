@@ -1,12 +1,13 @@
 <html>
 <head>
-<link rel='stylesheet' type='text/css' href='resources/styles.css'>
+{{> header_content }}
 <script async='' src='resources/scripts.js'></script>
 <script>
 document.csrf = '{{csrf}}';
 </script>
 </head>
 <body>
+{{> nav_side }}
 <h1>Rust Home</h1>
 <div class='devices_container'>
     Welcome back {{username}}! <a href='/logout'>Logout</a>

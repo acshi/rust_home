@@ -1,34 +1,36 @@
-#![feature(plugin)]
-#![feature(custom_derive)]
-#![plugin(rocket_codegen)]
+#![feature(proc_macro_hygiene, decl_macro)]
+// #![feature(custom_attribute)]
 
-extern crate rocket;
+#[macro_use] extern crate rocket;
 #[macro_use] extern crate rocket_contrib;
 extern crate rand;
 extern crate serde;
 extern crate serde_json;
 #[macro_use] extern crate serde_derive;
-extern crate urlencoded;
 extern crate config;
-extern crate ring_pwhash;
+extern crate scrypt;
 extern crate time;
 extern crate chrono;
 #[macro_use] extern crate maplit;
+extern crate serial;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rocket::{State, Outcome};
 use rocket::http::{Cookie, Cookies};
 use rocket::response::{Redirect, NamedFile};
 use rocket::request::{self, Form, Request, FromRequest};
-use rocket_contrib::Template;
-use rocket_contrib::{Json, Value};
+use rocket_contrib::templates::Template;
+use rocket_contrib::json::{Json, JsonValue};
 
-use rand::{Rng, OsRng};
-use ring_pwhash::scrypt;
+use rand::RngCore;
+use rand::rngs::OsRng;
 use time::Duration;
 use chrono::{DateTime, Utc};
+use serial::{SerialPort};
 
 #[derive(Debug, Clone, Serialize)]
 struct User {
@@ -64,14 +66,14 @@ struct ScryptParams {
 
 #[derive(Debug, Clone, Serialize)]
 struct BoolIrDeviceData {
-	id: u16,
+	id: u32,
 	name: String,
 	value: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct BoolIrDevice {
-	id: u16,
+	id: u32,
 	name: String,
 	value: Mutex<bool>,
 }
@@ -82,7 +84,8 @@ struct HomeState {
 	pub users: Vec<User>,
 	pub sessions: Mutex<Vec<Session>>,
 	pub ir_key: [u8; 32],
-	pub bool_ir_devices: Vec<BoolIrDevice>,
+	pub secret_key: String,
+	pub bool_ir_devices: Arc<Vec<BoolIrDevice>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,7 +148,8 @@ impl<'a, 'r> FromRequest<'a, 'r> for CsrfValidation {
 	type Error = ();
 	fn from_request(req: &'a Request<'r>) -> request::Outcome<CsrfValidation, ()> {
 		// check for same origin, that host matches
-		let target_origin = req.headers().get_one("Host").unwrap_or("");
+		let target_origin = req.headers().get_one("X-Forwarded-Host").unwrap_or(
+								req.headers().get_one("Host").unwrap_or(""));
 		let source_origin = req.headers().get_one("Origin").unwrap_or(
 								req.headers().get_one("Referer").unwrap_or(""));
 		let source_origin = source_origin.split('/').nth(2).unwrap_or(""); // (https:)/()/(acshi.duckdns.org)/()
@@ -168,12 +172,26 @@ impl<'a, 'r> FromRequest<'a, 'r> for CsrfValidation {
 	}
 }
 
-fn make_data(state: &HomeState, session: &Session, user: &User) -> TemplateData {
+fn make_devices_data(state: &HomeState) -> Vec<BoolIrDeviceData> {
 	let mut bool_ir_device_data = Vec::new();
-	for d in &state.bool_ir_devices {
+	for d in state.bool_ir_devices.iter() {
 		let value = *d.value.lock().unwrap();
 		bool_ir_device_data.push(BoolIrDeviceData { id: d.id, name: d.name.to_owned(), value });
 	}
+	bool_ir_device_data
+}
+
+fn make_data_anon(state: &HomeState) -> TemplateData {
+	let bool_ir_device_data = make_devices_data(state);
+	TemplateData {
+		username: "keyed".to_owned(),
+		csrf: "".to_owned(),
+		bool_ir_devices: bool_ir_device_data,
+	}
+}
+
+fn make_data(state: &HomeState, session: &Session, user: &User) -> TemplateData {
+	let bool_ir_device_data = make_devices_data(state);
 	TemplateData {
 		username: user.username.to_owned(),
 		csrf: buffer_to_hex_str(&session.csrf),
@@ -181,7 +199,7 @@ fn make_data(state: &HomeState, session: &Session, user: &User) -> TemplateData 
 	}
 }
 
-#[error(403)]
+#[catch(403)]
 fn forbidden() -> &'static str {
 	"<html>403 Forbidden</html>"
 }
@@ -195,9 +213,8 @@ fn buffer_to_hex_str(buffer: &[u8]) -> String {
 }
 
 fn make_session_key() -> [u8; 32] {
-	let mut crypt_rng = OsRng::new().unwrap();
 	let mut key = [0u8; 32];
-	crypt_rng.fill_bytes(&mut key);
+	OsRng.fill_bytes(&mut key);
 	key
 }
 
@@ -221,19 +238,20 @@ fn login(login_attempt: Form<LoginAttempt>, state: State<HomeState>, mut cookies
 	// compute hash before redirecting on bad username to help against timing attack
 	// since the hash computation is fairly slow
 	let params = &state.scrypt_params;
-	let sparams = scrypt::ScryptParams::new(params.log_n, params.r, params.p);
+	let sparams = scrypt::ScryptParams::new(params.log_n, params.r, params.p).unwrap();
 	let mut hash = [0u8; 32];
 	if user.is_none() {
-		scrypt::scrypt(password.as_bytes(), &[0u8; 16], &sparams, &mut hash);
+		scrypt::scrypt(password.as_bytes(), &[0u8; 16], &sparams, &mut hash).unwrap();
 		return Redirect::to("/login_failed");
 	} else {
-		scrypt::scrypt(password.as_bytes(), &user.unwrap().salt, &sparams, &mut hash);
+		scrypt::scrypt(password.as_bytes(), &user.unwrap().salt, &sparams, &mut hash).unwrap();
 	}
 	let user = user.unwrap();
 
 	println!("computed hash\t [{}]", buffer_to_hex_str(&hash));
 	println!("actual hash\t [{}]", buffer_to_hex_str(&user.hash));
 
+	// TODO: make this a constant time comparison
 	if hash == user.hash {
 		let session_key = make_session_key();
 		let key_str = buffer_to_hex_str(&session_key);
@@ -247,7 +265,7 @@ fn login(login_attempt: Form<LoginAttempt>, state: State<HomeState>, mut cookies
 		let csrf = make_session_key();
 		let mut sessions = state.sessions.lock().unwrap();
 		sessions.push(Session {key: session_key, user_index: user.user_index, expiration, csrf});
-		return Redirect::to("/");
+		return Redirect::to("/home");
 	}
 	Redirect::to("/login_failed")
 }
@@ -280,23 +298,28 @@ fn logout(state: State<HomeState>, mut cookies: Cookies) -> Redirect {
 }
 
 #[get("/")]
+fn index() -> Template {
+	Template::render("index", ())
+}
+
+#[get("/home")]
 fn admin_index(state: State<HomeState>, session: Session, user: User) -> Template {
 	Template::render("admin_index", &make_data(&state, &session, &user))
 }
 
 #[get("/device_state")]
-fn device_state(state: State<HomeState>, session: Session, user: User) -> Json<Value> {
+fn device_state(state: State<HomeState>, session: Session, user: User) -> Json<JsonValue> {
 	Json(json!(make_data(&state, &session, &user)))
 }
 
-#[get("/device_state", rank = 2)]
+#[get("/device_state", rank = 3)]
 fn device_state_unauthorized() -> Redirect {
 	Redirect::to("/")
 }
 
 #[put("/device_state/<id>/<value>")]
-fn set_device_state(id: u16, value: bool, state: State<HomeState>, session: Session, user: User, _csrf: CsrfValidation) -> Json<Value> {
-	for d in &state.bool_ir_devices {
+fn set_device_state(id: u32, value: bool, state: State<HomeState>, session: Session, user: User, _csrf: CsrfValidation) -> Json<JsonValue> {
+	for d in state.bool_ir_devices.iter() {
 		if d.id == id {
 			*d.value.lock().unwrap() = value;
 			break;
@@ -305,8 +328,29 @@ fn set_device_state(id: u16, value: bool, state: State<HomeState>, session: Sess
 	Json(json!(make_data(&state, &session, &user)))
 }
 
+// #[derive(FromForm)]
+// struct SecretKey {
+//     key: String,
+// }
+
+#[put("/device_state/<id>/<value>/<secret_key>")]
+fn set_device_state_keyed(id: u32, value: bool, secret_key: String, state: State<HomeState>) -> Json<JsonValue> {
+	// let secret_key = secret_key.into_inner().key;
+	if secret_key != state.secret_key {
+		return Json(json!("Access denied"))
+	}
+
+	for d in state.bool_ir_devices.iter() {
+		if d.id == id {
+			*d.value.lock().unwrap() = value;
+			break;
+		}
+	}
+	Json(json!(make_data_anon(&state)))
+}
+
 // #[options("/device_state/<_id>/<_value>")]
-// fn set_device_state_options(_id: u16, _value: bool) -> Response<'static> {
+// fn set_device_state_options(_id: u32, _value: bool) -> Response<'static> {
 // 	Response::build().raw_header("Allow", "PUT")
 // 					 .raw_header("Access-Control-Allow-Origin", "http://localhost.test:9000")
 // 					 .raw_header("Access-Control-Allow-Methods", "PUT")
@@ -335,12 +379,12 @@ fn login_failed() -> Template {
 	Template::render("login", hashmap!{"login_failed" => true})
 }
 
-#[get("/", rank = 2)]
+#[get("/home", rank = 2)]
 fn login_form() -> Template {
 	Template::render("login", ())
 }
 
-#[error(404)]
+#[catch(404)]
 fn not_found() -> Template {
 	Template::render("404", ())
 }
@@ -382,13 +426,14 @@ fn parse_config() -> HomeState {
 
 	#[derive(Debug, Deserialize)]
 	pub struct ConfBoolIrDevice {
-		id: u16,
+		id: u32,
 		name: String,
 	}
 
 	#[derive(Debug, Deserialize)]
 	struct ConfSettings {
 		ir_key: String,
+		secret_key: String,
 		users: Vec<ConfUser>,
 		scrypt: ScryptParams,
 		bool_ir_devices: Vec<ConfBoolIrDevice>,
@@ -414,15 +459,54 @@ fn parse_config() -> HomeState {
 	}
 
 	let mut bool_ir_devices = Vec::new();
-	for d in settings.bool_ir_devices {
+	for d in &settings.bool_ir_devices {
 		bool_ir_devices.push(BoolIrDevice { value: Mutex::new(false), id: d.id, name: d.name.to_owned() });
 	}
+	let bool_ir_devices = Arc::new(bool_ir_devices);
 
 	let mut ir_key = [0u8; 32];
 	read_hex_str(&settings.ir_key, &mut ir_key[..]).unwrap();
 
+	let secret_key = settings.secret_key.to_owned();
+
 	let sessions = Mutex::new(Vec::<Session>::new());
-	HomeState {scrypt_params: settings.scrypt, users, sessions, ir_key, bool_ir_devices}
+
+	let serial = serial::open("/dev/ttyUSB0");
+	if let Ok(mut serial) = serial {
+		serial.reconfigure(&|settings| {
+	        settings.set_baud_rate(serial::Baud115200).unwrap();
+	        settings.set_char_size(serial::Bits8);
+	        settings.set_parity(serial::ParityNone);
+	        settings.set_stop_bits(serial::Stop1);
+	        settings.set_flow_control(serial::FlowNone);
+			Ok(())
+		}).unwrap();
+
+		let mut world_state = Vec::<BoolIrDeviceData>::new();
+		for d in &settings.bool_ir_devices {
+			world_state.push(BoolIrDeviceData { id: d.id, name: d.name.to_owned(), value: false });
+		}
+		let bool_ir_devices = bool_ir_devices.clone();
+		thread::spawn(move || {
+			loop {
+				thread::sleep(std::time::Duration::from_millis(100));
+				// check for changes to state
+				for (i, d) in bool_ir_devices.iter().enumerate() {
+					let value = *d.value.lock().unwrap();
+					if world_state[i].value != value {
+						let set_str = format!("s{}:{}\n", d.id, if value {1} else {0});
+						serial.write(set_str.as_bytes()).unwrap();
+						world_state[i].value = value;
+						println!("Writing to arduino: '{}'\n", set_str);
+					}
+				}
+			}
+		});
+	} else {
+		println!("Failed to open serial port at /dev/ttyUSB0. Continuing without it.\n");
+	}
+
+	HomeState {scrypt_params: settings.scrypt, users, sessions, ir_key, secret_key, bool_ir_devices}
 }
 
 fn main() {
@@ -430,8 +514,8 @@ fn main() {
 
 	rocket::ignite()
 		.manage(state)
-		.mount("/", routes![resources, admin_index, device_state, device_state_unauthorized, set_device_state, login_form, login_failed, login, logout, test])
-		.catch(errors![not_found, forbidden])
+		.mount("/", routes![resources, index, admin_index, device_state, device_state_unauthorized, set_device_state, set_device_state_keyed, login_form, login_failed, login, logout, test])
+		.register(catchers![not_found, forbidden])
 		.attach(Template::fairing())
 		.launch();
 }
